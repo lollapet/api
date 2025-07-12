@@ -1,4 +1,5 @@
 def gerar_zpl_ifood(order):
+    print(order)
     # Garante que todos os campos são string e não None
     order_id = str(getattr(order, "order_id", "") or "")
     customer_name = str(getattr(getattr(order, "customer", None), "name", "") or "")
