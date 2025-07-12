@@ -221,7 +221,7 @@ def populate_order_from_payload(payload, full_code, db: Session):
     db.refresh(order)
     return order
 
-@router.post("/")
+@router.post("")
 async def ifood_webhook(request: Request, db: Session = Depends(get_db)):
     payload = await request.json()
     print(payload)
