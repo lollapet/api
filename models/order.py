@@ -8,6 +8,7 @@ class OrderORM(Base):
     __tablename__ = "orders"
     id = Column(Integer, primary_key=True)
     order_id = Column(String, unique=True, index=True, nullable=False)
+    status = Column(String, default="received")
     display_id = Column(String)
     created_at = Column(DateTime)
     category = Column(String)

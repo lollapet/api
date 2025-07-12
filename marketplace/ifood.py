@@ -13,6 +13,7 @@ from models.order import (
 import json
 from printing.zpl_utils import gerar_zpl_ifood
 from printing.printnode_utils import imprimir_zpl_printnode
+import logging
 # from labelary_utils import gerar_pdf_labelary  # Se quiser PDF
 
 router = APIRouter()
@@ -20,7 +21,7 @@ router = APIRouter()
 IFOOD_CLIENT_ID = os.getenv("IFOOD_CLIENT_ID")
 IFOOD_CLIENT_SECRET = os.getenv("IFOOD_CLIENT_SECRET")
 IFOOD_AUTH_URL = "https://merchant-api.ifood.com.br/authentication/v1.0/oauth/token"
-IFOOD_ORDER_URL = "https://merchant-api.ifood.com.br/order/v1.0/orders/{}"
+IFOOD_ORDER_URL = "https://merchant-api.ifood.com.br/orders/{}/virtual-bag"
 
 async def get_ifood_token():
     async with httpx.AsyncClient() as client:
@@ -203,7 +204,7 @@ def populate_order_from_payload(payload, full_code, db: Session):
             )
             db.add(order_payment)
         else:
-            print("Pagamento ignorado (não é dict):", payment)
+            logging.info("Pagamento ignorado (não é dict):{payment}")
 
     # Additional Fees
     for fee in payload.get("additionalFees", []):
@@ -220,67 +221,72 @@ def populate_order_from_payload(payload, full_code, db: Session):
     db.refresh(order)
     return order
 
-@router.post("")
-async def receive_ifood_webhook(request: Request, db: Session = Depends(get_db)):
-    raw_body = await request.body()
-
-    # Checagem rápida de KEEPALIVE no corpo cru
-    if b"KEEPALIVE" in raw_body:
-        return JSONResponse(status_code=200, content={})
-
-    try:
-        # Tenta decodificar o corpo como JSON
-        payload = json.loads(raw_body)
-    except Exception as e:
-        # Se não for JSON, retorna erro
-        return JSONResponse(
-            status_code=400,
-            content={"success": False, "message": f"Payload inválido: {str(e)}"}
-        )
-
-    full_code = payload.get("fullCode", "CONFIRMED")
-    if full_code != "CONFIRMED":
-        # Ignora qualquer evento que não seja CONFIRMED
-        return JSONResponse(status_code=200, content={})
-
+@router.post("/")
+async def ifood_webhook(request: Request, db: Session = Depends(get_db)):
+    payload = await request.json()
     order_id = payload.get("orderId") or payload.get("id")
-    merchant_id = payload.get("merchantId") or (payload.get("merchant") or {}).get("id") or (
-        payload.get("merchantIds")[0] if isinstance(payload.get("merchantIds"), list) and payload.get("merchantIds") else None
-    )
-    if not order_id or not merchant_id:
+    event_type = payload.get("fullCode") or payload.get("eventType") or payload.get("status")
+
+    # --- Keepalive/Ping do iFood ---
+    if event_type and event_type.upper() == "KEEPALIVE":
+        return JSONResponse(status_code=200, content={"status": "ok"})
+
+    if not order_id or not event_type:
         return JSONResponse(
             status_code=400,
-            content={"success": False, "message": "orderId ou merchantId não encontrado no payload"}
+            content={"success": False, "message": "orderId or eventType/fullCode/status not found in payload"}
         )
 
-    try:
-        token = await get_ifood_token()
-        order_details = await get_ifood_order(order_id, token)
-    except HTTPException as e:
-        print(f"Erro ao buscar detalhes do pedido no iFood: {e.detail}")
-        return JSONResponse(
-            status_code=404,
-            content={"success": False, "message": f"Pedido não encontrado no iFood: {order_id}"}
-        )
-    order = populate_order_from_payload(order_details, full_code, db)
+    order = db.query(OrderORM).filter_by(order_id=order_id).first()
+    if not order:
+        if event_type == "PLACED":
+            # Use a função de popular pedido se quiser todos os dados completos:
+            order = populate_order_from_payload(payload, event_type, db)
+        else:
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "message": f"Order {order_id} not found"}
+            )
 
-    # --- Gera ZPL e imprime ---
-    zpl = gerar_zpl_ifood(order)
-    try:
+    # Status mapping in English
+    if event_type == "PLACED":
+        order.status = "received"
+        # Confirma o pedido no iFood o quanto antes
+        access_token = await get_ifood_token()
+        await confirmar_pedido_ifood(order_id, access_token)
+        # Agora sim, gera e imprime a etiqueta
+        zpl = gerar_zpl_ifood(order)
         await imprimir_zpl_printnode(zpl)
-    except Exception as e:
-        print(f"Erro ao imprimir etiqueta: {e}")
+    elif event_type == "CONFIRMED":
+        order.status = "accepted"
+    elif event_type == "READY_TO_SHIP":
+        order.status = "ready_to_ship"
+    elif event_type == "DISPATCHED":
+        order.status = "dispatched"
+    elif event_type == "DELIVERED":
+        order.status = "delivered"
+    elif event_type == "CANCELLED":
+        order.status = "cancelled"
+    else:
+        order.status = event_type.lower()
 
-    # --- (Opcional) Gera PDF para visualização/armazenamento ---
-    # pdf_bytes = await gerar_pdf_labelary(zpl)
-    # with open(f"pedido_{order.order_id}.pdf", "wb") as f:
-    #     f.write(pdf_bytes)
+    db.commit()
 
     return JSONResponse(
         status_code=200,
-        content={
-            "success": True,
-            "order_db_id": order.id,
-            "order_id": order.order_id
-        }
+        content={"success": True, "order_id": order_id, "status": order.status}
     )
+
+async def confirmar_pedido_ifood(order_id, access_token):
+    url = f"https://merchant-api.ifood.com.br/order/v1.0/orders/{order_id}/confirm"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, headers=headers)
+        if response.status_code != 200:
+            logging.error(f"Erro ao confirmar pedido {order_id}: {response.text}")
+            raise Exception(f"Erro ao confirmar pedido {order_id}: {response.text}")
+        logging.info(f"Pedido {order_id} confirmado com sucesso no iFood.")
+        return response.json()
