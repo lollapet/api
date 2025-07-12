@@ -11,8 +11,8 @@ from models.order import (
     OrderPaymentORM, OrderAdditionalFeeORM
 )
 import json
-from zpl_utils import gerar_zpl_ifood
-from printnode_utils import imprimir_zpl_printnode
+from printing.zpl_utils import gerar_zpl_ifood
+from printing.printnode_utils import imprimir_zpl_printnode
 # from labelary_utils import gerar_pdf_labelary  # Se quiser PDF
 
 router = APIRouter()
