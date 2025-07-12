@@ -224,6 +224,7 @@ def populate_order_from_payload(payload, full_code, db: Session):
 @router.post("/")
 async def ifood_webhook(request: Request, db: Session = Depends(get_db)):
     payload = await request.json()
+    print(payload)
     order_id = payload.get("orderId") or payload.get("id")
     event_type = payload.get("fullCode") or payload.get("eventType") or payload.get("status")
 
@@ -249,26 +250,42 @@ async def ifood_webhook(request: Request, db: Session = Depends(get_db)):
             )
 
     # Status mapping in English
+    previous_status = (
+        payload.get("metadata", {})
+        .get("triggerEvent", {})
+        .get("previousStatus", "")
+    ).upper()
+
     if event_type == "PLACED":
         order.status = "received"
-        # Confirma o pedido no iFood o quanto antes
-        access_token = await get_ifood_token()
-        await confirmar_pedido_ifood(order_id, access_token)
-        # Agora sim, gera e imprime a etiqueta
-        zpl = gerar_zpl_ifood(order)
-        await imprimir_zpl_printnode(zpl)
+        # Só confirma se o status anterior NÃO for PLACED nem CONFIRMED
+        if previous_status not in ("PLACED", "CONFIRMED"):
+            access_token = await get_ifood_token()
+            await confirmar_pedido_ifood(order_id, access_token)
+        else:
+            logging.info(f"Pedido {order_id} já estava confirmado ou em PLACED anteriormente, não será reenviado.")
+        # Imprime etiqueta apenas se não for repetido
+        if previous_status not in ("PLACED", "CONFIRMED"):
+            zpl = gerar_zpl_ifood(order)
+            await imprimir_zpl_printnode(zpl)
     elif event_type == "CONFIRMED":
-        order.status = "accepted"
+        if previous_status != "CONFIRMED":
+            order.status = "accepted"
     elif event_type == "READY_TO_SHIP":
-        order.status = "ready_to_ship"
+        if previous_status != "READY_TO_SHIP":
+            order.status = "ready_to_ship"
     elif event_type == "DISPATCHED":
-        order.status = "dispatched"
+        if previous_status != "DISPATCHED":
+            order.status = "dispatched"
     elif event_type == "DELIVERED":
-        order.status = "delivered"
+        if previous_status != "DELIVERED":
+            order.status = "delivered"
     elif event_type == "CANCELLED":
-        order.status = "cancelled"
+        if previous_status != "CANCELLED":
+            order.status = "cancelled"
     else:
         order.status = event_type.lower()
+        logging.info(f"Evento {event_type} pedido {order_id} previousStatus='{previous_status}'")
 
     db.commit()
 
@@ -286,7 +303,7 @@ async def confirmar_pedido_ifood(order_id, access_token):
     async with httpx.AsyncClient() as client:
         response = await client.post(url, headers=headers)
         if response.status_code != 200:
-            logging.error(f"Erro ao confirmar pedido {order_id}: {response.text}")
+            logging.error(f"Erro ao confirmar pedido {order_id}: Status {response.status_code} - {response.text}")
             raise Exception(f"Erro ao confirmar pedido {order_id}: {response.text}")
         logging.info(f"Pedido {order_id} confirmado com sucesso no iFood.")
         return response.json()
