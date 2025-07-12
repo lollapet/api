@@ -6,8 +6,6 @@ PRINTNODE_API_KEY = os.getenv("PRINTNODE_API_KEY")
 PRINTNODE_PRINTER_ID = int(os.getenv("PRINTNODE_PRINTER_ID", "0"))  # Defina no .env
 
 async def imprimir_zpl_printnode(zpl: str, printer_id: int = None, api_key: str = None):
-    if not zpl or not isinstance(zpl, str):
-        raise ValueError("ZPL inválido: valor vazio ou não é string.")
     if printer_id is None:
         printer_id = PRINTNODE_PRINTER_ID
     if api_key is None:
@@ -17,7 +15,7 @@ async def imprimir_zpl_printnode(zpl: str, printer_id: int = None, api_key: str 
         "printerId": printer_id,
         "title": "Etiqueta iFood",
         "contentType": "raw_base64",
-        "content": base64.b64encode(zpl.encode("utf-8")).decode()
+        "content": base64.b64encode(zpl.encode()).decode()
     }
     auth = (api_key, "")
     async with httpx.AsyncClient() as client:

@@ -267,8 +267,7 @@ async def receive_ifood_webhook(request: Request, db: Session = Depends(get_db))
     # --- Gera ZPL e imprime ---
     zpl = gerar_zpl_ifood(order)
     try:
-        zpl_bytes = zpl.encode("utf-8") if isinstance(zpl, str) else zpl
-        await imprimir_zpl_printnode(zpl_bytes)
+        await imprimir_zpl_printnode(zpl)
     except Exception as e:
         print(f"Erro ao imprimir etiqueta: {e}")
 
